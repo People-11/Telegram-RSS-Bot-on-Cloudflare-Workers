@@ -77,11 +77,10 @@ export default {
           const newItems = lastIndex >= 0 ? items.slice(0, lastIndex) : items.slice(0, 1);
 
           if (newItems.length > 0) {
-            // 发送更新通知
-            const messages = newItems.map((item) => rssUtil.formatMessage(item, sub.feed_title));
-            for (const message of messages) {
-              await sendMessage(env.TELEGRAM_BOT_TOKEN, sub.user_id, message);
-            }
+            // 发送聚合更新通知
+            const articlesList = newItems.map((item) => rssUtil.formatMessage(item)).join("\n");
+            const aggregatedMessage = `**${sub.feed_title}**\n${articlesList}`;
+            await sendMessage(env.TELEGRAM_BOT_TOKEN, sub.user_id, aggregatedMessage);
 
             // 更新最后获取时间和 GUID
             await db.updateLastFetch(sub.user_id, sub.feed_url, Date.now(), items[0].guid);

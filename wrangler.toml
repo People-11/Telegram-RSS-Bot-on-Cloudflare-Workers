@@ -2,7 +2,7 @@
 name = "telegram-rss-bot"
 main = "src/index.ts"
 compatibility_date = "2025-01-19"
-compatibility_flags = ["nodejs_compat"]
+compatibility_flags = ["nodejs_compat", "global_fetch_strictly_public"]
 
 # Workers Logs
 # Docs: https://developers.cloudflare.com/workers/observability/logs/workers-logs/
