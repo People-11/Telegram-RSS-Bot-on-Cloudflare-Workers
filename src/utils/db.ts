@@ -11,107 +11,65 @@ export interface RSSSubscription {
 }
 
 export class Database {
-  private cache: Cache;
-  private cacheUrl: string;
+  private cache = caches.default;
+  private cachePrefix = "https://tg-rss.internal/lang/";
 
-  constructor(private db: D1Database) {
-    this.cache = caches.default;
-    this.cacheUrl = "https://telegram-rss-bot.workers.dev"; // 使用你的 worker URL 作为 base url
-  }
+  constructor(private d1: D1Database) {}
 
-  // 用户语言设置相关操作
   async getUserLanguage(userId: number): Promise<Language> {
-    const cacheKey = new URL(`/cache/user_lang_${userId}`, this.cacheUrl).toString();
+    const cacheKey = this.cachePrefix + userId;
+    const cached = await this.cache.match(cacheKey);
+    if (cached) return (await cached.text()) as Language;
 
-    try {
-      // 尝试从缓存获取
-      const cachedResponse = await this.cache.match(cacheKey);
-      if (cachedResponse) {
-        const cachedLang = await cachedResponse.text();
-        return cachedLang as Language;
-      }
-
-      // 如果缓存中没有，从数据库获取
-      const result = await this.db.prepare("SELECT language FROM user_settings WHERE user_id = ?").bind(userId).first<{ language: Language }>();
-
-      const lang = result?.language || "zh";
-
-      // 将结果存入缓存，设置 1 小时过期时间
-      await this.cache.put(
-        cacheKey,
-        new Response(lang, {
-          headers: {
-            "Cache-Control": "max-age=3600",
-          },
-        }),
-      );
-
-      return lang;
-    } catch (error) {
-      console.error("Error getting user language:", error);
-      return "zh"; // 发生错误时返回默认语言
-    }
+    const res = await this.d1.prepare("SELECT language FROM user_settings WHERE user_id = ?").bind(userId).first<{ language: Language }>();
+    const lang = res?.language || "zh";
+    await this.cache.put(cacheKey, new Response(lang, { headers: { "Cache-Control": "max-age=3600" } }));
+    return lang;
   }
 
-  async setUserLanguage(userId: number, language: Language): Promise<void> {
-    const cacheKey = new URL(`/cache/user_lang_${userId}`, this.cacheUrl).toString();
-
-    try {
-      // 更新数据库
-      await this.db.prepare("INSERT OR REPLACE INTO user_settings (user_id, language) VALUES (?, ?)").bind(userId, language).run();
-
-      // 删除旧的缓存
-      await this.cache.delete(cacheKey);
-
-      // 设置新的缓存，但强制立即过期以确保下次获取时会重新从数据库读取
-      await this.cache.put(
-        cacheKey,
-        new Response(language, {
-          headers: {
-            "Cache-Control": "max-age=0, must-revalidate",
-          },
-        }),
-      );
-    } catch (error) {
-      console.error("Error setting user language:", error);
-      throw error;
-    }
+  async setUserLanguage(userId: number, language: Language) {
+    await this.d1.prepare("INSERT OR REPLACE INTO user_settings (user_id, language) VALUES (?, ?)").bind(userId, language).run();
+    await this.cache.delete(this.cachePrefix + userId);
   }
 
-  // RSS订阅相关操作
-  async addSubscription(userId: number, feedUrl: string, feedTitle: string): Promise<void> {
-    const now = Date.now();
-    await this.db
-      .prepare("INSERT INTO rss_subscriptions (user_id, feed_url, feed_title, created_at) VALUES (?, ?, ?, ?)")
-      .bind(userId, feedUrl, feedTitle, now)
-      .run();
+  async addSubscription(userId: number, feedUrl: string, feedTitle: string) {
+    await this.d1.prepare("INSERT INTO rss_subscriptions (user_id, feed_url, feed_title, created_at) VALUES (?, ?, ?, ?)").bind(userId, feedUrl, feedTitle, Date.now()).run();
   }
 
-  async removeSubscription(userId: number, feedUrl: string): Promise<void> {
-    await this.db.prepare("DELETE FROM rss_subscriptions WHERE user_id = ? AND feed_url = ?").bind(userId, feedUrl).run();
+  async removeSubscription(userId: number, feedUrl: string) {
+    await this.d1.prepare("DELETE FROM rss_subscriptions WHERE user_id = ? AND feed_url = ?").bind(userId, feedUrl).run();
   }
 
   async listSubscriptions(userId: number): Promise<RSSSubscription[]> {
-    return await this.db
-      .prepare("SELECT * FROM rss_subscriptions WHERE user_id = ?")
-      .bind(userId)
-      .all<RSSSubscription>()
-      .then((result) => result.results);
+    return (await this.d1.prepare("SELECT * FROM rss_subscriptions WHERE user_id = ?").bind(userId).all<RSSSubscription>()).results;
   }
 
-  async updateLastFetch(userId: number, feedUrl: string, lastFetchTime: number, lastItemGuid: string): Promise<void> {
-    await this.db
-      .prepare("UPDATE rss_subscriptions SET last_fetch_time = ?, last_item_guid = ? WHERE user_id = ? AND feed_url = ?")
-      .bind(lastFetchTime, lastItemGuid, userId, feedUrl)
-      .run();
+  async updateLastFetch(userId: number, feedUrl: string, lastFetchTime: number, guids: string[]) {
+    const current = await this.d1.prepare("SELECT last_item_guid FROM rss_subscriptions WHERE user_id = ? AND feed_url = ?").bind(userId, feedUrl).first<{ last_item_guid: string }>();
+
+    let guidList: string[] = [];
+    try {
+      guidList = current?.last_item_guid ? JSON.parse(current.last_item_guid) : [];
+      if (!Array.isArray(guidList)) guidList = [current!.last_item_guid];
+    } catch {
+      guidList = [current!.last_item_guid];
+    }
+
+    const newList = Array.from(new Set([...guids, ...guidList])).slice(0, 50);
+    await this.d1.prepare("UPDATE rss_subscriptions SET last_fetch_time = ?, last_item_guid = ? WHERE user_id = ? AND feed_url = ?").bind(lastFetchTime, JSON.stringify(newList), userId, feedUrl).run();
+  }
+
+  parseGuids(raw: string | null | undefined): string[] {
+    if (!raw) return [];
+    try {
+      const p = JSON.parse(raw);
+      return Array.isArray(p) ? p : [raw];
+    } catch {
+      return [raw];
+    }
   }
 
   async getSubscriptionsToUpdate(interval: number): Promise<RSSSubscription[]> {
-    const cutoffTime = Date.now() - interval * 60 * 1000;
-    return await this.db
-      .prepare("SELECT * FROM rss_subscriptions WHERE last_fetch_time IS NULL OR last_fetch_time < ?")
-      .bind(cutoffTime)
-      .all<RSSSubscription>()
-      .then((result) => result.results);
+    return (await this.d1.prepare("SELECT * FROM rss_subscriptions WHERE last_fetch_time IS NULL OR last_fetch_time < ?").bind(Date.now() - interval * 60000).all<RSSSubscription>()).results;
   }
 }
