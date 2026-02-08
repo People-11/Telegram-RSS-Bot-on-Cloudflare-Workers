@@ -70,6 +70,6 @@ export class Database {
   }
 
   async getSubscriptionsToUpdate(interval: number): Promise<RSSSubscription[]> {
-    return (await this.d1.prepare("SELECT * FROM rss_subscriptions WHERE last_fetch_time IS NULL OR last_fetch_time < ?").bind(Date.now() - interval * 60000).all<RSSSubscription>()).results;
+    return (await this.d1.prepare("SELECT * FROM rss_subscriptions WHERE last_fetch_time IS NULL OR last_fetch_time < ? ORDER BY last_fetch_time ASC LIMIT 15").bind(Date.now() - interval * 60000).all<RSSSubscription>()).results;
   }
 }

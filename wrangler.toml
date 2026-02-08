@@ -51,7 +51,7 @@ database_id = "d736bdc6-8e2c-41c2-9d3f-dfcbc41b47af"
 
 # 触发器配置，每 20 分钟检查一次 RSS 更新
 [triggers]
-crons = ["*/20 * * * *"]
+crons = ["* * * * *"]
 
 # Bind a dispatch namespace. Use Workers for Platforms to deploy serverless functions programmatically on behalf of your customers.
 # Docs: https://developers.cloudflare.com/workers/wrangler/configuration/#dispatch-namespace-bindings-workers-for-platforms
